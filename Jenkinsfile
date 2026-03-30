@@ -1,50 +1,61 @@
 pipeline {
     agent any
 
+    tools {
+        maven 'Maven3'
+    }
+
     environment {
-        DOCKER_IMAGE = "0xsaurabh/java-app"
-        IMAGE_TAG = "${BUILD_NUMBER}"
-        RELEASE_NAME = "java-app"
-        DOCKER_HOST = "tcp://13.201.103.103:2375"
+        AWS_REGION = 'ap-south-1'
+        ECR_REPO   = '208976686989.dkr.ecr.ap-south-1.amazonaws.com/my-ecr-repo'
+        APP_NAME   = 'my-ecr-repo'
     }
 
     stages {
-
-        stage('Clone Code') {
+        stage('Checkout') {
             steps {
-                git 'https://github.com/0xSaurabh/Spring-Boot-Sample-Project.git'
+                checkout scm
             }
         }
 
-        stage('Build JAR') {
+        stage('Build') {
             steps {
-                withMaven(maven: 'maven') {
-                    sh 'mvn clean package'
+                sh 'mvn clean package -DskipTests'
+            }
+        }
+
+        stage('Test') {
+            steps {
+                sh 'mvn test'
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                script {
+                    dockerImage = docker.build("${ECR_REPO}:${BUILD_NUMBER}")
                 }
             }
         }
 
-        stage('Build Docker Image') {
+        stage('Docker Push') {
             steps {
-                sh 'docker build -t $DOCKER_IMAGE:$IMAGE_TAG .'
+                sh '''
+                    aws ecr get-login-password --region $AWS_REGION | \
+                    docker login --username AWS --password-stdin $ECR_REPO
+                '''
+                sh "docker push ${ECR_REPO}:${BUILD_NUMBER}"
             }
         }
 
-        stage('Push Image') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: 'docker-creds', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
-                    sh 'echo $PASS | docker login -u $USER --password-stdin'
-                    sh 'docker push $DOCKER_IMAGE:$IMAGE_TAG'
-                }
-            }
-        }
-
-        stage('Deploy via Helm') {
+        stage('Deploy with Helm') {
             steps {
                 sh """
-                helm upgrade --install $RELEASE_NAME ./java-app \
-                --set image.repository=$DOCKER_IMAGE \
-                --set image.tag=$IMAGE_TAG
+                    helm upgrade --install myapp ./mychart \
+                    --namespace helm-deployment --create-namespace \
+                    --set image.repository=${ECR_REPO} \
+                    --set image.tag=${BUILD_NUMBER} \
+                    --set service.type=LoadBalancer
                 """
             }
         }
